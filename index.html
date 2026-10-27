@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>視線でページめくり</title>
+
+<!-- MediaPipe Face Mesh：視線・まばたき検出 -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+<!-- PDF.js：PDF表示 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- JSZip：ZIP/CBZ内の画像を読み込む -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: sans-serif;
+    text-align: center;
+    margin: 12px;
+    background: #f5f5f5;
+    color: #222;
+  }
+
+  h1 { font-size: 24px; }
+
+  button, input, select {
+    margin: 5px;
+    padding: 9px;
+    font-size: 15px;
+  }
+
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+  .controls { margin: 8px; }
+
+  .modeButton.active {
+    background: #d9eaff;
+    border: 2px solid #3579c6;
+  }
+
+  #pageInfo {
+    font-size: 18px;
+    font-weight: bold;
+    margin: 10px;
+  }
+
+  #readerArea {
+    margin: 14px auto;
+    padding: 10px;
+    background: white;
+    border: 1px solid #ccc;
+    max-width: 1100px;
+    min-height: 180px;
+    max-height: 78vh;
+    overflow: auto;
+  }
+
+  #pdfCanvas {
+    display: block;
+    margin: 0 auto;
+    max-width: none;
+  }
+
+  #imagePage {
+    display: none;
+    margin: 0 auto;
+    max-width: none;
+    height: auto;
+  }
+
+  #zoomInput {
+    width: 78px;
+    text-align: center;
+  }
+
+  #video { display: none; }
+
+  #gazeStatus {
+    font-size: 23px;
+    font-weight: bold;
+  }
+
+  #actionStatus {
+    color: #176b35;
+    font-weight: bold;
+    line-height: 1.5;
+  }
+
+  #orientationStatus {
+    font-weight: bold;
+    line-height: 1.5;
+  }
+
+  #orientationStatus.blocked {
+    color: #b45309;
+  }
+
+  #status, #gazeStatus, #blinkStatus,
+  #actionStatus, #orientationStatus {
+    margin: 8px;
+  }
+
+  .hint {
+    font-size: 13px;
+    color: #555;
+    line-height: 1.5;
+  }
+
+  .filePanel {
+    padding: 8px;
+    margin: 8px auto;
+    max-width: 900px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+
+<body>
+
+<h1>視線でページめくり</h1>
+<p class="hint">
+  PDF楽譜・画像マンガを、左右の視線＋まばたきでページ移動する試作システム
+</p>
+
+<div class="controls">
+  <button id="pdfModeButton" class="modeButton active" type="button">
+    PDFを読む
+  </button>
+  <button id="imageModeButton" class="modeButton" type="button">
+    画像・マンガを読む
+  </button>
+</div>
+
+<div id="pdfPanel" class="filePanel">
+  <label for="pdfFile">PDFファイル：</label>
+  <input type="file" id="pdfFile" accept=".pdf,application/pdf">
+</div>
+
+<div id="imagePanel" class="filePanel hidden">
+  <div>
+    <label for="imageFiles">画像を複数選択：</label>
+    <input type="file" id="imageFiles" accept="image/*" multiple>
+  </div>
+  <div>
+    <label for="archiveFile">またはマンガのZIP/CBZ：</label>
+    <input type="file" id="archiveFile"
+           accept=".zip,.cbz,application/zip,application/x-cbz">
+  </div>
+  <p class="hint">
+    画像はファイル名順で表示します。ZIP/CBZ内の画像もファイル名順に並べます。
+  </p>
+</div>
+
+<div id="pageInfo">PDFを選択してください</div>
+
+<div class="controls" id="zoomControls">
+  <label for="zoomInput">表示サイズ：</label>
+  <input type="number" id="zoomInput"
+         min="50" max="200" step="10" value="100"
+         inputmode="numeric" aria-label="表示サイズ（％）">
+  <span>%</span>
+  <div>
+    <small>50〜200％。数値入力、または入力欄の三角ボタンで10％ずつ調整</small>
+  </div>
+</div>
+
+<div class="controls">
+  <button id="prevButton" disabled>← 前のページ</button>
+  <button id="nextButton" disabled>次のページ →</button>
+</div>
+
+<div id="readerArea">
+  <canvas id="pdfCanvas"></canvas>
+  <img id="imagePage" alt="閲覧中のページ">
+</div>
+
+<hr>
+
+<h2>視線・まばたき操作</h2>
+
+<p id="status">カメラを起動してください。</p>
+
+<button id="startButton" type="button">カメラを起動</button>
+<button id="calibrateButton" type="button" disabled>
+  正面を見て基準登録
+</button>
+
+<div class="controls">
+  <label>
+    <input type="checkbox" id="orientationGuardToggle" checked>
+    顔の向きが大きく変わったら譜めくりを停止
+  </label>
+</div>
+
+<p id="orientationStatus">顔の向き：基準登録が必要です</p>
+<p id="gazeStatus">視線：未計測</p>
+<p id="blinkStatus">まばたき回数：0</p>
+<p id="actionStatus">ファイルを選択してカメラを起動してください。</p>
+<p id="debug">視線の基準登録後に計測値が表示されます。</p>
+
+<video id="video" autoplay playsinline muted></video>
+
+<script>
+// =====================================================
+// 閲覧モード共通：PDF / 画像・マンガ
+// =====================================================
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const pdfModeButton = document.getElementById("pdfModeButton");
+const imageModeButton = document.getElementById("imageModeButton");
+const pdfPanel = document.getElementById("pdfPanel");
+const imagePanel = document.getElementById("imagePanel");
+const pdfInput = document.getElementById("pdfFile");
+const imageFilesInput = document.getElementById("imageFiles");
+const archiveInput = document.getElementById("archiveFile");
+const pdfCanvas = document.getElementById("pdfCanvas");
+const pdfCtx = pdfCanvas.getContext("2d");
+const imagePage = document.getElementById("imagePage");
+const readerArea = document.getElementById("readerArea");
+const pageInfo = document.getElementById("pageInfo");
+const prevButton = document.getElementById("prevButton");
+const nextButton = document.getElementById("nextButton");
+const zoomInput = document.getElementById("zoomInput");
+const actionStatus = document.getElementById("actionStatus");
+
+let readerMode = "pdf";
+let pdfDoc = null;
+let imagePages = [];
+let currentPage = 1;
+let totalPages = 0;
+let renderTask = null;
+let renderSequence = 0;
+let imageBaseWidth = 0;
+
+
+// 画像ファイルのURLを解放
+function revokeImageUrls() {
+  for (const page of imagePages) {
+    if (page.ownedUrl && page.src) {
+      URL.revokeObjectURL(page.src);
+    }
+  }
+
+  imagePages = [];
+}
+
+
+// 閲覧内容をリセット
+function resetReader(message) {
+  renderSequence++;
+
+  if (renderTask) {
+    try {
+      renderTask.cancel();
+    } catch (e) {
+      // 描画済みなら何もしない
+    }
+
+    renderTask = null;
+  }
+
+  revokeImageUrls();
+
+  pdfDoc = null;
+  currentPage = 1;
+  totalPages = 0;
+
+  pdfCanvas.width = 0;
+  pdfCanvas.height = 0;
+  pdfCanvas.style.width = "0px";
+  pdfCanvas.style.height = "0px";
+
+  imagePage.removeAttribute("src");
+  imagePage.style.width = "auto";
+  imageBaseWidth = 0;
+
+  updateReaderVisibility();
+
+  pageInfo.textContent = message;
+  prevButton.disabled = true;
+  nextButton.disabled = true;
+}
+
+
+// 選択中の閲覧モードに合わせて表示を変更
+function updateReaderVisibility() {
+  const isPdf = readerMode === "pdf";
+
+  pdfPanel.classList.toggle("hidden", !isPdf);
+  imagePanel.classList.toggle("hidden", isPdf);
+
+  pdfModeButton.classList.toggle("active", isPdf);
+  imageModeButton.classList.toggle("active", !isPdf);
+
+  pdfCanvas.style.display = isPdf && pdfDoc ? "block" : "none";
+
+  imagePage.style.display =
+    !isPdf && imagePages.length ? "block" : "none";
+}
+
+
+// PDFモード・画像モードを切り替え
+function setReaderMode(mode) {
+  if (readerMode === mode) return;
+
+  readerMode = mode;
+
+  pdfInput.value = "";
+  imageFilesInput.value = "";
+  archiveInput.value = "";
+
+  resetReader(
+    mode === "pdf"
+      ? "PDFを選択してください"
+      : "画像またはZIP/CBZを選択してください"
+  );
+
+  updateReaderVisibility();
+
+  actionStatus.textContent =
+    mode === "pdf"
+      ? "PDFモードです。PDFを選択してください。"
+      : "画像・マンガモードです。複数画像またはZIP/CBZを選択してください。";
+}
+
+pdfModeButton.addEventListener("click", () => setReaderMode("pdf"));
+
+imageModeButton.addEventListener("click", () => setReaderMode("images"));
+
+
+// ページ表示とボタンの状態を更新
+function updatePageControls() {
+  if (totalPages > 0) {
+    const imageName =
+      readerMode === "images"
+        ? "　（" + imagePages[currentPage - 1].name + "）"
+        : "";
+
+    pageInfo.textContent =
+      "ページ " + currentPage + " / " + totalPages + imageName;
+  } else {
+    pageInfo.textContent =
+      readerMode === "pdf"
+        ? "PDFを選択してください"
+        : "画像またはZIP/CBZを選択してください";
+  }
+
+  prevButton.disabled = totalPages === 0 || currentPage <= 1;
+  nextButton.disabled = totalPages === 0 || currentPage >= totalPages;
+}
+
+
+// PDFページを描画
+async function renderPdfPage(requestedPage) {
+  if (!pdfDoc) return;
+
+  currentPage = Math.max(
+    1,
+    Math.min(requestedPage, totalPages)
+  );
+
+  const sequence = ++renderSequence;
+
+  if (renderTask) {
+    try {
+      renderTask.cancel();
+    } catch (e) {
+      // 描画済みなら何もしない
+    }
+
+    renderTask = null;
+  }
+
+  try {
+    const page = await pdfDoc.getPage(currentPage);
+
+    if (sequence !== renderSequence) return;
+
+    const baseViewport = page.getViewport({ scale: 1 });
+
+    const availableWidth = Math.max(
+      200,
+      Math.min(1100, readerArea.clientWidth - 24)
+    );
+
+    const baseScale = Math.min(
+      1.5,
+      availableWidth / baseViewport.width
+    );
+
+    const zoom = Number(zoomInput.value) / 100;
+
+    const viewport = page.getViewport({
+      scale: baseScale * zoom
+    });
+
+    const outputScale = window.devicePixelRatio || 1;
+
+    pdfCanvas.width = Math.floor(
+      viewport.width * outputScale
+    );
+
+    pdfCanvas.height = Math.floor(
+      viewport.height * outputScale
+    );
+
+    pdfCanvas.style.width =
+      Math.floor(viewport.width) + "px";
+
+    pdfCanvas.style.height =
+      Math.floor(viewport.height) + "px";
+
+    pdfCanvas.style.display = "block";
+    imagePage.style.display = "none";
+
+    const task = page.render({
+      canvasContext: pdfCtx,
+      viewport,
+      transform: outputScale === 1
+        ? null
+        : [outputScale, 0, 0, outputScale, 0, 0]
+    });
+
+    renderTask = task;
+
+    await task.promise;
+
+    if (sequence !== renderSequence) return;
+
+    renderTask = null;
+
+    updatePageControls();
+
+    prevButton.disabled = currentPage <= 1;
+    nextButton.disabled = currentPage >= totalPages;
+
+  } catch (error) {
+    if (error.name === "RenderingCancelledException") return;
+
+    console.error(error);
+
+    actionStatus.textContent =
+      "PDFの描画エラー：" + error.message;
+  }
+}
+
+
+// 画像ページを表示
+function renderImagePage(requestedPage) {
+  if (!imagePages.length) return;
+
+  currentPage = Math.max(
+    1,
+    Math.min(requestedPage, totalPages)
+  );
+
+  const item = imagePages[currentPage - 1];
+
+  imagePage.onload = () => {
+    const availableWidth = Math.max(
+      200,
+      Math.min(1100, readerArea.clientWidth - 24)
+    );
+
+    const naturalWidth =
+      imagePage.naturalWidth || availableWidth;
+
+    const baseScale = Math.min(
+      1.5,
+      availableWidth / naturalWidth
+    );
+
+    imageBaseWidth = naturalWidth * baseScale;
+
+    applyImageZoom();
+  };
+
+  imagePage.onerror = () => {
+    actionStatus.textContent =
+      "画像を表示できませんでした：" + item.name;
+  };
+
+  imagePage.src = item.src;
+  imagePage.alt = item.name;
+
+  pdfCanvas.style.display = "none";
+  imagePage.style.display = "block";
+
+  updatePageControls();
+}
+
+
+// 画像の表示倍率を適用
+function applyImageZoom() {
+  if (!imagePages.length || !imagePage.naturalWidth) return;
+
+  const zoom = Number(zoomInput.value) / 100;
+
+  imagePage.style.width =
+    Math.floor(imageBaseWidth * zoom) + "px";
+
+  imagePage.style.height = "auto";
+}
+
+
+// モードに応じてページを切り替える
+function showPage(page) {
+  if (readerMode === "pdf") {
+    renderPdfPage(page);
+  } else {
+    renderImagePage(page);
+  }
+}
+
+
+// =====================================================
+// PDF読み込み
+// =====================================================
+
+pdfInput.addEventListener("change", async () => {
+  const file = pdfInput.files && pdfInput.files[0];
+
+  if (!file) return;
+
+  resetReader("PDFを読み込んでいます……");
+
+  readerMode = "pdf";
+  updateReaderVisibility();
+
+  actionStatus.textContent = "PDFを読み込んでいます……";
+
+  try {
+    const bytes = new Uint8Array(
+      await file.arrayBuffer()
+    );
+
+    const loadingTask = pdfjsLib.getDocument({
+      data: bytes
+    });
+
+    const loadedPdf = await loadingTask.promise;
+
+    pdfDoc = loadedPdf;
+    totalPages = pdfDoc.numPages;
+    currentPage = 1;
+
+    updateReaderVisibility();
+
+    await renderPdfPage(1);
+
+    actionStatus.textContent =
+      "PDFを読み込みました。視線操作を試せます。";
+
+  } catch (error) {
+    console.error(error);
+
+    pageInfo.textContent = "PDFを読み込めませんでした";
+
+    actionStatus.textContent =
+      "PDF読み込みエラー：" + error.message;
+  }
+});
+
+
+// =====================================================
+// 画像・マンガ読み込み
+// =====================================================
+
+// 数字を含むファイル名を自然な順番で並べる
+function naturalSort(a, b) {
+  return a.localeCompare(
+    b,
+    undefined,
+    { numeric: true, sensitivity: "base" }
+  );
+}
+
+
+// 読み込める画像の拡張子
+function isImageFileName(name) {
+  return /\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(name);
+}
+
+
+// 画像一覧を設定して1ページ目を表示
+function installImagePages(items, message) {
+  if (!items.length) {
+    actionStatus.textContent =
+      "対応する画像ファイルが見つかりませんでした。";
+    return;
+  }
+
+  resetReader("画像を読み込んでいます……");
+
+  readerMode = "images";
+
+  imagePages = items;
+  totalPages = imagePages.length;
+  currentPage = 1;
+
+  updateReaderVisibility();
+
+  renderImagePage(1);
+
+  actionStatus.textContent =
+    message + "（" + totalPages + "ページ）";
+}
+
+
+// 複数画像の読み込み
+imageFilesInput.addEventListener("change", () => {
+  const files = Array.from(imageFilesInput.files || []);
+
+  if (!files.length) return;
+
+  const sorted = files
+    .filter(file =>
+      file.type.startsWith("image/") ||
+      isImageFileName(file.name)
+    )
+    .sort((a, b) => naturalSort(a.name, b.name));
+
+  const items = sorted.map(file => ({
+    name: file.name,
+    src: URL.createObjectURL(file),
+    ownedUrl: true
+  }));
+
+  pdfInput.value = "";
+  archiveInput.value = "";
+
+  installImagePages(
+    items,
+    "画像を読み込みました"
+  );
+});
+
+
+// ZIP / CBZから画像を読み込む
+archiveInput.addEventListener("change", async () => {
+  const file =
+    archiveInput.files && archiveInput.files[0];
+
+  if (!file) return;
+
+  if (typeof JSZip === "undefined") {
+    actionStatus.textContent =
+      "ZIP読み込みライブラリを読み込めませんでした。インターネット接続を確認してください。";
+    return;
+  }
+
+  actionStatus.textContent =
+    "ZIP/CBZを展開しています……";
+
+  pdfInput.value = "";
+  imageFilesInput.value = "";
+
+  try {
+    const zip = await JSZip.loadAsync(file);
+
+    const names = Object.keys(zip.files)
+      .filter(name => {
+        const entry = zip.files[name];
+
+        return (
+          !entry.dir &&
+          isImageFileName(name) &&
+          !name.split("/").some(part => part === "__MACOSX") &&
+          !name.split("/").pop().startsWith("._")
+        );
+      })
+      .sort(naturalSort);
+
+    const items = [];
+
+    for (const name of names) {
+      const blob = await zip.files[name].async("blob");
+      const ext = name.split(".").pop().toLowerCase();
+
+      const mimeMap = {
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        png: "image/png",
+        webp: "image/webp",
+        gif: "image/gif",
+        bmp: "image/bmp",
+        avif: "image/avif"
+      };
+
+      const typedBlob = blob.type
+        ? blob
+        : new Blob(
+            [blob],
+            { type: mimeMap[ext] || "application/octet-stream" }
+          );
+
+      items.push({
+        name: name.split("/").pop(),
+        src: URL.createObjectURL(typedBlob),
+        ownedUrl: true
+      });
+    }
+
+    installImagePages(
+      items,
+      "ZIP/CBZから画像を読み込みました"
+    );
+
+  } catch (error) {
+    console.error(error);
+
+    actionStatus.textContent =
+      "ZIP/CBZを読み込めませんでした：" + error.message;
+  }
+});
+
+
+// =====================================================
+// 共通：手動ページ切り替え
+// =====================================================
+
+prevButton.addEventListener("click", () => {
+  if (totalPages && currentPage > 1) {
+    showPage(currentPage - 1);
+  }
+});
+
+nextButton.addEventListener("click", () => {
+  if (totalPages && currentPage < totalPages) {
+    showPage(currentPage + 1);
+  }
+});
+
+
+// =====================================================
+// 表示倍率
+// =====================================================
+
+function setZoom(value) {
+  if (String(value).trim() === "") {
+    zoomInput.value = "100";
+
+    if (readerMode === "pdf" && pdfDoc) {
+      renderPdfPage(currentPage);
+    } else {
+      applyImageZoom();
+    }
+
+    return;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    zoomInput.value = "100";
+    return;
+  }
+
+  const zoom = Math.max(
+    50,
+    Math.min(200, Math.round(parsed))
+  );
+
+  zoomInput.value = String(zoom);
+
+  if (readerMode === "pdf" && pdfDoc) {
+    renderPdfPage(currentPage);
+  } else {
+    applyImageZoom();
+  }
+}
+
+zoomInput.addEventListener("change", () => {
+  setZoom(zoomInput.value);
+});
+
+zoomInput.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    setZoom(zoomInput.value);
+    zoomInput.blur();
+  }
+});
+
+
+// =====================================================
+// MediaPipe：左右の視線＋まばたき、顔向きガード
+// =====================================================
+
+const status = document.getElementById("status");
+const gazeStatus = document.getElementById("gazeStatus");
+const blinkStatus = document.getElementById("blinkStatus");
+const debug = document.getElementById("debug");
+
+const startButton = document.getElementById("startButton");
+const calibrateButton = document.getElementById("calibrateButton");
+const video = document.getElementById("video");
+
+const orientationGuardToggle =
+  document.getElementById("orientationGuardToggle");
+
+const orientationStatus =
+  document.getElementById("orientationStatus");
+
+const EAR_THRESHOLD = 0.20;
+const GAZE_THRESHOLD = 0.07;
+const CALIBRATION_TARGET = 25;
+const TURN_COOLDOWN = 700;
+
+// 顔の向き変化を判定する特徴量のしきい値。
+// 角度そのものではない。
+const FACE_DIRECTION_THRESHOLD = 0.08;
+const FACE_DIRECTION_SMOOTHING_FRAMES = 5;
+
+let running = false;
+let processing = false;
+
+let closedFrames = 0;
+let blinkCount = 0;
+let blinkDirectionAtStart = "正面";
+let lastBlinkAt = -Infinity;
+let lastPageTurnAt = -Infinity;
+
+let isCalibrated = false;
+let calibrating = false;
+
+let centerRatio = null;
+let calibrationSamples = [];
+let gazeSamples = [];
+let lastGaze = "正面";
+
+let faceDirectionCalibrationSamples = [];
+let faceDirectionSamples = [];
+
+let centerFaceDirection = null;
+let currentFaceDirection = null;
+let faceDirectionDifference = 0;
+
+let isFaceDirectionBlocked = false;
+let isFaceDirectionAvailable = false;
+
+
+// 2点間の距離
+function distance(a, b) {
+  const dx = (a.x - b.x) * 640;
+  const dy = (a.y - b.y) * 480;
+
+  return Math.hypot(dx, dy);
+}
+
+
+// 目の開き具合（EAR）
+function calculateEAR(lm, a, b, c, d, e, f) {
+  const horizontal = distance(lm[a], lm[d]);
+
+  if (horizontal === 0) return 0;
+
+  return (
+    distance(lm[b], lm[f]) +
+    distance(lm[c], lm[e])
+  ) / (2 * horizontal);
+}
+
+
+// 虹彩と目の両端から左右位置の比率を計算
+function eyeRatio(lm, irisIndex, corner1, corner2) {
+  const irisX = lm[irisIndex].x;
+  const x1 = lm[corner1].x;
+  const x2 = lm[corner2].x;
+
+  const minX = Math.min(x1, x2);
+  const width = Math.max(x1, x2) - minX;
+
+  if (width < 0.0001) return null;
+
+  return (irisX - minX) / width;
+}
+
+
+// 平均値
+function average(values) {
+  return values.reduce(
+    (sum, value) => sum + value, 0
+  ) / values.length;
+}
+
+
+// 鼻先と左右の目尻の位置関係から顔の左右向きを簡易推定
+function calculateFaceDirectionIndex(lm) {
+  const leftX = lm[33].x;
+  const rightX = lm[263].x;
+  const noseX = lm[1].x;
+
+  const eyeWidth = Math.abs(rightX - leftX);
+
+  if (eyeWidth < 0.0001) return null;
+
+  const eyeCenterX = (leftX + rightX) / 2;
+
+  return (noseX - eyeCenterX) / eyeWidth;
+}
+
+
+// 顔の向きチェック状態を表示
+function updateFaceDirectionStatus() {
+  orientationStatus.classList.remove("blocked");
+
+  if (!orientationGuardToggle.checked) {
+    orientationStatus.textContent =
+      "顔の向きチェック：OFF（向きによる停止なし）";
+    return;
+  }
+
+  if (!isCalibrated || centerFaceDirection === null) {
+    orientationStatus.textContent =
+      "顔の向き：基準登録が必要です";
+    return;
+  }
+
+  if (!isFaceDirectionAvailable) {
+    orientationStatus.textContent =
+      "顔の向きを計測できないため、譜めくり停止中";
+
+    orientationStatus.classList.add("blocked");
+    return;
+  }
+
+  if (isFaceDirectionBlocked) {
+    orientationStatus.textContent =
+      "顔の向きが大きく変化：譜めくり停止中（変化量=" +
+      faceDirectionDifference.toFixed(3) + "）";
+
+    orientationStatus.classList.add("blocked");
+
+  } else {
+    orientationStatus.textContent =
+      "顔の向き：基準範囲内（変化量=" +
+      faceDirectionDifference.toFixed(3) + "）";
+  }
+}
+
+
+// =====================================================
+// 視線＋まばたきによるページ切り替え
+// =====================================================
+
+function handleGazeBlink(direction) {
+  if (!isCalibrated) {
+    actionStatus.textContent =
+      "先に正面を見て基準登録してください。";
+    return;
+  }
+
+  // 顔の向きチェックがONなら、向きが変わった間は停止
+  if (
+    orientationGuardToggle.checked &&
+    (!isFaceDirectionAvailable || isFaceDirectionBlocked)
+  ) {
+    actionStatus.textContent = isFaceDirectionAvailable
+      ? "顔の向きが基準から大きく変わっているため、ページ切り替えを停止しました。"
+      : "顔の向きを計測できないため、ページ切り替えを停止しました。";
+
+    return;
+  }
+
+  if (direction !== "左" && direction !== "右") {
+    actionStatus.textContent =
+      "左右を見てまばたきするとページを切り替えられます。";
+    return;
+  }
+
+  if (totalPages === 0) {
+    actionStatus.textContent =
+      "先にPDFまたは画像・マンガを読み込んでください。";
+    return;
+  }
+
+  const now = performance.now();
+
+  // 短時間の連続切り替えを抑制
+  if (now - lastPageTurnAt < TURN_COOLDOWN) return;
+
+  if (direction === "右" && currentPage < totalPages) {
+    lastPageTurnAt = now;
+
+    showPage(currentPage + 1);
+
+    actionStatus.textContent =
+      "右＋まばたき → 次のページ";
+
+  } else if (direction === "左" && currentPage > 1) {
+    lastPageTurnAt = now;
+
+    showPage(currentPage - 1);
+
+    actionStatus.textContent =
+      "左＋まばたき → 前のページ";
+
+  } else {
+    actionStatus.textContent =
+      "これ以上ページを切り替えられません。";
+  }
+}
+
+
+// =====================================================
+// MediaPipeの検出結果を処理
+// =====================================================
+
+function onResults(results) {
+  const faces = results.multiFaceLandmarks;
+
+  if (!faces || faces.length === 0) {
+    status.textContent = "顔を検知できていません";
+    gazeStatus.textContent = "視線：計測できません";
+
+    closedFrames = 0;
+    blinkDirectionAtStart = "正面";
+    lastGaze = "正面";
+
+    gazeSamples = [];
+    faceDirectionSamples = [];
+
+    isFaceDirectionBlocked = false;
+    isFaceDirectionAvailable = false;
+    currentFaceDirection = null;
+
+    updateFaceDirectionStatus();
+    return;
+  }
+
+  // 現在はMediaPipeが検出した1人分を使う
+  const lm = faces[0];
+
+  if (lm.length < 478) {
+    status.textContent =
+      "虹彩の特徴点が取得できていません";
+
+    closedFrames = 0;
+    blinkDirectionAtStart = "正面";
+    isFaceDirectionAvailable = false;
+    isFaceDirectionBlocked = false;
+
+    updateFaceDirectionStatus();
+    return;
+  }
+
+  status.textContent = "顔を検知しています";
+
+
+  // --------------------------
+  // 顔の向きガード
+  // --------------------------
+
+  const rawFaceDirection =
+    calculateFaceDirectionIndex(lm);
+
+  isFaceDirectionAvailable =
+    rawFaceDirection !== null;
+
+  if (rawFaceDirection !== null) {
+    faceDirectionSamples.push(rawFaceDirection);
+
+    if (
+      faceDirectionSamples.length >
+      FACE_DIRECTION_SMOOTHING_FRAMES
+    ) {
+      faceDirectionSamples.shift();
+    }
+
+    currentFaceDirection =
+      average(faceDirectionSamples);
+
+    if (
+      isCalibrated &&
+      centerFaceDirection !== null
+    ) {
+      faceDirectionDifference =
+        currentFaceDirection - centerFaceDirection;
+
+      isFaceDirectionBlocked =
+        Math.abs(faceDirectionDifference) >
+        FACE_DIRECTION_THRESHOLD;
+
+    } else {
+      faceDirectionDifference = 0;
+      isFaceDirectionBlocked = false;
+    }
+
+  } else {
+    isFaceDirectionBlocked = false;
+  }
+
+  updateFaceDirectionStatus();
+
+
+  // --------------------------
+  // まばたき検出
+  // --------------------------
+
+  const leftEAR = calculateEAR(
+    lm, 33, 160, 158, 133, 153, 144
+  );
+
+  const rightEAR = calculateEAR(
+    lm, 362, 385, 387, 263, 373, 380
+  );
+
+  const ear = (leftEAR + rightEAR) / 2;
+
+  if (ear < EAR_THRESHOLD) {
+    if (closedFrames === 0) {
+      // 目を閉じ始めた瞬間の視線を保存
+      blinkDirectionAtStart = lastGaze;
+    }
+
+    closedFrames++;
+
+  } else {
+    if (closedFrames >= 2) {
+      blinkCount++;
+      lastBlinkAt = performance.now();
+
+      handleGazeBlink(blinkDirectionAtStart);
+    }
+
+    closedFrames = 0;
+    blinkDirectionAtStart = lastGaze;
+  }
+
+  blinkStatus.textContent =
+    "まばたき回数：" + blinkCount +
+    (performance.now() - lastBlinkAt < 800
+      ? "（まばたき検出！）"
+      : "");
+
+
+  // --------------------------
+  // 虹彩から左右視線を計算
+  // --------------------------
+
+  const ratio1 = eyeRatio(lm, 468, 33, 133);
+  const ratio2 = eyeRatio(lm, 473, 362, 263);
+
+  if (ratio1 === null || ratio2 === null) return;
+
+  const rawRatio = (ratio1 + ratio2) / 2;
+
+
+  // --------------------------
+  // 基準登録
+  // --------------------------
+
+  if (calibrating) {
+    if (ear >= EAR_THRESHOLD) {
+      calibrationSamples.push(rawRatio);
+
+      if (rawFaceDirection !== null) {
+        faceDirectionCalibrationSamples.push(
+          rawFaceDirection
+        );
+      }
+    }
+
+    debug.textContent =
+      "正面の基準を登録中：" +
+      calibrationSamples.length + "/" +
+      CALIBRATION_TARGET;
+
+    gazeStatus.textContent = "正面を見てください";
+
+    if (calibrationSamples.length >= CALIBRATION_TARGET) {
+      centerRatio = average(calibrationSamples);
+
+      centerFaceDirection =
+        faceDirectionCalibrationSamples.length
+          ? average(faceDirectionCalibrationSamples)
+          : null;
+
+      isCalibrated = true;
+      calibrating = false;
+
+      gazeSamples = [];
+
+      faceDirectionSamples =
+        rawFaceDirection === null
+          ? []
+          : [rawFaceDirection];
+
+      lastGaze = "正面";
+      faceDirectionDifference = 0;
+      isFaceDirectionBlocked = false;
+
+      calibrateButton.disabled = false;
+      gazeStatus.textContent = "基準登録完了";
+
+      debug.textContent =
+        "視線基準=" + centerRatio.toFixed(3) +
+        " ｜ 顔向き基準=" +
+        (
+          centerFaceDirection === null
+            ? "登録失敗"
+            : centerFaceDirection.toFixed(3)
+        );
+
+      updateFaceDirectionStatus();
+
+      actionStatus.textContent =
+        "左右＋まばたきでPDF・画像のページを切り替えできます。";
+    }
+
+    return;
+  }
+
+
+  if (!isCalibrated) {
+    gazeStatus.textContent =
+      "視線：基準登録が必要です";
+    return;
+  }
+
+  // 目を閉じている間は視線判定を更新しない
+  if (ear < EAR_THRESHOLD) {
+    gazeStatus.textContent =
+      "視線：" + lastGaze + "（まばたき中）";
+    return;
+  }
+
+
+  // --------------------------
+  // 左右の視線判定
+  // --------------------------
+
+  gazeSamples.push(rawRatio);
+
+  if (gazeSamples.length > 7) {
+    gazeSamples.shift();
+  }
+
+  const smoothRatio = average(gazeSamples);
+  const difference = smoothRatio - centerRatio;
+
+  // 既存試作品の方向対応を維持
+  if (difference > GAZE_THRESHOLD) {
+    lastGaze = "左";
+  } else if (difference < -GAZE_THRESHOLD) {
+    lastGaze = "右";
+  } else {
+    lastGaze = "正面";
+  }
+
+  gazeStatus.textContent = "視線：" + lastGaze;
+
+  debug.textContent =
+    "現在値=" + smoothRatio.toFixed(3) +
+    " ｜ 正面基準=" + centerRatio.toFixed(3) +
+    " ｜ 視線差分=" + difference.toFixed(3) +
+    " ｜ 顔向き変化=" + faceDirectionDifference.toFixed(3);
+}
+
+
+// =====================================================
+// カメラ映像を処理
+// =====================================================
+
+async function detectFrame(faceMesh) {
+  if (!running) return;
+
+  if (video.readyState >= 2 && !processing) {
+    processing = true;
+
+    try {
+      await faceMesh.send({ image: video });
+
+    } catch (error) {
+      console.error(error);
+
+      status.textContent =
+        "検知エラー：" + error.message;
+
+      running = false;
+      startButton.disabled = false;
+
+      const stream = video.srcObject;
+
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+
+    } finally {
+      processing = false;
+    }
+  }
+
+  if (running) {
+    requestAnimationFrame(() => detectFrame(faceMesh));
+  }
+}
+
+
+// =====================================================
+// カメラを起動
+// =====================================================
+
+startButton.addEventListener("click", async () => {
+  startButton.disabled = true;
+  status.textContent = "準備中です……";
+
+  try {
+    if (typeof FaceMesh === "undefined") {
+      throw new Error("MediaPipeを読み込めませんでした");
+    }
+
+    const faceMesh = new FaceMesh({
+      locateFile: file =>
+        "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/" + file
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    faceMesh.onResults(onResults);
+
+    const stream =
+      await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: 640,
+          height: 480,
+          facingMode: "user"
+        },
+        audio: false
+      });
+
+    video.srcObject = stream;
+
+    await video.play();
+
+    running = true;
+    calibrateButton.disabled = false;
+
+    status.textContent = "カメラ起動中";
+
+    detectFrame(faceMesh);
+
+  } catch (error) {
+    console.error(error);
+
+    status.textContent =
+      "エラー：" + error.name + " / " + error.message;
+
+    startButton.disabled = false;
+  }
+});
+
+
+// =====================================================
+// 視線・顔の向きの基準を登録
+// =====================================================
+
+calibrateButton.addEventListener("click", () => {
+  if (!running) return;
+
+  isCalibrated = false;
+  calibrating = true;
+
+  centerRatio = null;
+  calibrationSamples = [];
+  gazeSamples = [];
+
+  faceDirectionCalibrationSamples = [];
+  faceDirectionSamples = [];
+
+  centerFaceDirection = null;
+  currentFaceDirection = null;
+  faceDirectionDifference = 0;
+
+  isFaceDirectionBlocked = false;
+  isFaceDirectionAvailable = false;
+
+  lastGaze = "正面";
+  blinkDirectionAtStart = "正面";
+  closedFrames = 0;
+
+  calibrateButton.disabled = true;
+
+  gazeStatus.textContent = "正面を見てください";
+
+  debug.textContent =
+    "目を開け、顔を正面に向けて画面中央を見てください。";
+
+  updateFaceDirectionStatus();
+});
+
+
+// =====================================================
+// 顔の向きチェック ON／OFF
+// =====================================================
+
+orientationGuardToggle.addEventListener("change", () => {
+  updateFaceDirectionStatus();
+
+  actionStatus.textContent =
+    orientationGuardToggle.checked
+      ? "顔の向きチェックON：基準から大きく変わると自動譜めくりを停止します。"
+      : "顔の向きチェックOFF：向きによる停止は行いません。";
+});
+
+
+// 初期表示
+updateReaderVisibility();
+updateFaceDirectionStatus();
+
+</script>
+</body>
+</html>
