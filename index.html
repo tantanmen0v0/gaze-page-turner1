@@ -57,14 +57,7 @@
   #orientationStatus.blocked { color: #b45309; }
   #status, #gazeStatus, #blinkStatus, #actionStatus, #orientationStatus { margin: 8px; }
   .hint { font-size: 13px; color: #555; line-height: 1.5; }
-  .filePanel {
-    padding: 8px;
-    margin: 8px auto;
-    max-width: 900px;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    background: #fff;
-  }
+  .filePanel { padding: 8px; margin: 8px auto; max-width: 900px; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -154,9 +147,9 @@ const nextButton = document.getElementById("nextButton");
 const zoomInput = document.getElementById("zoomInput");
 const actionStatus = document.getElementById("actionStatus");
 
-let readerMode = "pdf";
+let readerMode = "pdf"; // "pdf" または "images"
 let pdfDoc = null;
-let imagePages = [];
+let imagePages = []; // { name, src, ownedUrl }
 let currentPage = 1;
 let totalPages = 0;
 let renderTask = null;
@@ -173,7 +166,7 @@ function revokeImageUrls() {
 function resetReader(message) {
   renderSequence++;
   if (renderTask) {
-    try { renderTask.cancel(); } catch (e) {}
+    try { renderTask.cancel(); } catch (e) { /* 描画済みなら何もしない */ }
     renderTask = null;
   }
   revokeImageUrls();
@@ -209,11 +202,7 @@ function setReaderMode(mode) {
   pdfInput.value = "";
   imageFilesInput.value = "";
   archiveInput.value = "";
-  resetReader(
-    mode === "pdf"
-      ? "PDFを選択してください"
-      : "画像またはZIP/CBZを選択してください"
-  );
+  resetReader(mode === "pdf" ? "PDFを選択してください" : "画像またはZIP/CBZを選択してください");
   updateReaderVisibility();
   actionStatus.textContent = mode === "pdf"
     ? "PDFモードです。PDFを選択してください。"
@@ -237,7 +226,7 @@ async function renderPdfPage(requestedPage) {
   const sequence = ++renderSequence;
 
   if (renderTask) {
-    try { renderTask.cancel(); } catch (e) {}
+    try { renderTask.cancel(); } catch (e) { /* 描画済みなら何もしない */ }
     renderTask = null;
   }
 
@@ -282,7 +271,6 @@ function renderImagePage(requestedPage) {
   if (!imagePages.length) return;
   currentPage = Math.max(1, Math.min(requestedPage, totalPages));
   const item = imagePages[currentPage - 1];
-
   imagePage.onload = () => {
     const availableWidth = Math.max(200, Math.min(1100, readerArea.clientWidth - 24));
     const naturalWidth = imagePage.naturalWidth || availableWidth;
@@ -290,7 +278,6 @@ function renderImagePage(requestedPage) {
     imageBaseWidth = naturalWidth * baseScale;
     applyImageZoom();
   };
-
   imagePage.onerror = () => {
     actionStatus.textContent = "画像を表示できませんでした：" + item.name;
   };
@@ -316,12 +303,10 @@ function showPage(page) {
 pdfInput.addEventListener("change", async () => {
   const file = pdfInput.files && pdfInput.files[0];
   if (!file) return;
-
   resetReader("PDFを読み込んでいます……");
   readerMode = "pdf";
   updateReaderVisibility();
   actionStatus.textContent = "PDFを読み込んでいます……";
-
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const loadingTask = pdfjsLib.getDocument({ data: bytes });
@@ -352,7 +337,6 @@ function installImagePages(items, message) {
     actionStatus.textContent = "対応する画像ファイルが見つかりませんでした。";
     return;
   }
-
   resetReader("画像を読み込んでいます……");
   readerMode = "images";
   imagePages = items;
@@ -366,17 +350,13 @@ function installImagePages(items, message) {
 imageFilesInput.addEventListener("change", () => {
   const files = Array.from(imageFilesInput.files || []);
   if (!files.length) return;
-
-  const sorted = files
-    .filter(file => file.type.startsWith("image/") || isImageFileName(file.name))
+  const sorted = files.filter(file => file.type.startsWith("image/") || isImageFileName(file.name))
     .sort((a, b) => naturalSort(a.name, b.name));
-
   const items = sorted.map(file => ({
     name: file.name,
     src: URL.createObjectURL(file),
     ownedUrl: true
   }));
-
   pdfInput.value = "";
   archiveInput.value = "";
   installImagePages(items, "画像を読み込みました");
@@ -385,7 +365,6 @@ imageFilesInput.addEventListener("change", () => {
 archiveInput.addEventListener("change", async () => {
   const file = archiveInput.files && archiveInput.files[0];
   if (!file) return;
-
   if (typeof JSZip === "undefined") {
     actionStatus.textContent = "ZIP読み込みライブラリを読み込めませんでした。インターネット接続を確認してください。";
     return;
@@ -394,7 +373,6 @@ archiveInput.addEventListener("change", async () => {
   actionStatus.textContent = "ZIP/CBZを展開しています……";
   pdfInput.value = "";
   imageFilesInput.value = "";
-
   try {
     const zip = await JSZip.loadAsync(file);
     const names = Object.keys(zip.files)
@@ -410,28 +388,17 @@ archiveInput.addEventListener("change", async () => {
     for (const name of names) {
       const blob = await zip.files[name].async("blob");
       const ext = name.split(".").pop().toLowerCase();
-
       const mimeMap = {
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        png: "image/png",
-        webp: "image/webp",
-        gif: "image/gif",
-        bmp: "image/bmp",
-        avif: "image/avif"
+        jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+        webp: "image/webp", gif: "image/gif", bmp: "image/bmp", avif: "image/avif"
       };
-
-      const typedBlob = blob.type
-        ? blob
-        : new Blob([blob], { type: mimeMap[ext] || "application/octet-stream" });
-
+      const typedBlob = blob.type ? blob : new Blob([blob], { type: mimeMap[ext] || "application/octet-stream" });
       items.push({
         name: name.split("/").pop(),
         src: URL.createObjectURL(typedBlob),
         ownedUrl: true
       });
     }
-
     installImagePages(items, "ZIP/CBZから画像を読み込みました");
   } catch (error) {
     console.error(error);
@@ -442,7 +409,6 @@ archiveInput.addEventListener("change", async () => {
 prevButton.addEventListener("click", () => {
   if (totalPages && currentPage > 1) showPage(currentPage - 1);
 });
-
 nextButton.addEventListener("click", () => {
   if (totalPages && currentPage < totalPages) showPage(currentPage + 1);
 });
@@ -454,20 +420,16 @@ function setZoom(value) {
     else applyImageZoom();
     return;
   }
-
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     zoomInput.value = "100";
     return;
   }
-
   const zoom = Math.max(50, Math.min(200, Math.round(parsed)));
   zoomInput.value = String(zoom);
-
   if (readerMode === "pdf" && pdfDoc) renderPdfPage(currentPage);
   else applyImageZoom();
 }
-
 zoomInput.addEventListener("change", () => setZoom(zoomInput.value));
 zoomInput.addEventListener("keydown", event => {
   if (event.key === "Enter") {
@@ -489,10 +451,12 @@ const video = document.getElementById("video");
 const orientationGuardToggle = document.getElementById("orientationGuardToggle");
 const orientationStatus = document.getElementById("orientationStatus");
 
-// まばたき判定：端末のカメラ解像度に合わせてEARを計算し、
+// まばたき判定：iPad/iPhoneのカメラ解像度に合わせてEARを計算し、
 // 目を開いた状態のEARから判定しきい値を自動調整する。
-const EAR_THRESHOLD = 0.20;
+const EAR_THRESHOLD = 0.20; // 開眼基準が取得できない間の仮しきい値
 const EAR_BASELINE_RATIO = 0.70;
+const EAR_OPEN_THRESHOLD_RATIO = 0.82; // 閉眼判定との境界を分けて誤カウントを抑える
+const BLINK_MIN_INTERVAL = 250; // 1回のまばたきを重複カウントしないための最短間隔
 const EAR_MIN_THRESHOLD = 0.12;
 const EAR_MAX_THRESHOLD = 0.25;
 const GAZE_THRESHOLD = 0.07;
@@ -504,6 +468,8 @@ const FACE_DIRECTION_SMOOTHING_FRAMES = 5;
 let running = false;
 let processing = false;
 let closedFrames = 0;
+let eyeIsClosed = false;
+let closedCandidateAt = null;
 let blinkCount = 0;
 let blinkDirectionAtStart = "正面";
 let blinkClosedAt = null;
@@ -527,9 +493,10 @@ let faceDirectionDifference = 0;
 let isFaceDirectionBlocked = false;
 let isFaceDirectionAvailable = false;
 
-// MediaPipeのx/yはそれぞれ映像幅・映像高さで正規化されている。
-// 固定の640x480ではなく、実際のカメラ映像サイズで距離を計算する。
 function distance(a, b) {
+  // MediaPipeのx/yはそれぞれ映像幅・映像高さで正規化されている。
+  // 固定の640x480では縦向き映像や異なる解像度でEARがずれるため、
+  // 実際のカメラフレームサイズでピクセル距離に変換する。
   const width = video.videoWidth || 640;
   const height = video.videoHeight || 480;
   const dx = (a.x - b.x) * width;
@@ -538,7 +505,7 @@ function distance(a, b) {
 }
 
 function updateEarThreshold(ear) {
-  // 開眼基準を取得し、急激な変動を避けながらゆっくり更新する。
+  // 閉眼中の低い値を開眼基準に取り込まない。開眼基準はゆっくり追従する。
   if (Number.isFinite(ear) && ear > 0.15) {
     if (openEyeEarBaseline === null) {
       openEyeEarBaseline = ear;
@@ -548,7 +515,6 @@ function updateEarThreshold(ear) {
   }
 
   if (openEyeEarBaseline === null) return EAR_THRESHOLD;
-
   const adaptive = openEyeEarBaseline * EAR_BASELINE_RATIO;
   return Math.max(EAR_MIN_THRESHOLD, Math.min(EAR_MAX_THRESHOLD, adaptive));
 }
@@ -556,10 +522,7 @@ function updateEarThreshold(ear) {
 function calculateEAR(lm, a, b, c, d, e, f) {
   const horizontal = distance(lm[a], lm[d]);
   if (horizontal === 0) return 0;
-  return (
-    distance(lm[b], lm[f]) +
-    distance(lm[c], lm[e])
-  ) / (2 * horizontal);
+  return (distance(lm[b], lm[f]) + distance(lm[c], lm[e])) / (2 * horizontal);
 }
 
 function eyeRatio(lm, irisIndex, corner1, corner2) {
@@ -589,32 +552,24 @@ function calculateFaceDirectionIndex(lm) {
 
 function updateFaceDirectionStatus() {
   orientationStatus.classList.remove("blocked");
-
   if (!orientationGuardToggle.checked) {
     orientationStatus.textContent = "顔の向きチェック：OFF（向きによる停止なし）";
     return;
   }
-
   if (!isCalibrated || centerFaceDirection === null) {
     orientationStatus.textContent = "顔の向き：基準登録が必要です";
     return;
   }
-
   if (!isFaceDirectionAvailable) {
     orientationStatus.textContent = "顔の向きを計測できないため、譜めくり停止中";
     orientationStatus.classList.add("blocked");
     return;
   }
-
   if (isFaceDirectionBlocked) {
-    orientationStatus.textContent =
-      "顔の向きが大きく変化：譜めくり停止中（変化量=" +
-      faceDirectionDifference.toFixed(3) + "）";
+    orientationStatus.textContent = "顔の向きが大きく変化：譜めくり停止中（変化量=" + faceDirectionDifference.toFixed(3) + "）";
     orientationStatus.classList.add("blocked");
   } else {
-    orientationStatus.textContent =
-      "顔の向き：基準範囲内（変化量=" +
-      faceDirectionDifference.toFixed(3) + "）";
+    orientationStatus.textContent = "顔の向き：基準範囲内（変化量=" + faceDirectionDifference.toFixed(3) + "）";
   }
 }
 
@@ -623,20 +578,16 @@ function handleGazeBlink(direction) {
     actionStatus.textContent = "先に正面を見て基準登録してください。";
     return;
   }
-
-  if (orientationGuardToggle.checked &&
-      (!isFaceDirectionAvailable || isFaceDirectionBlocked)) {
+  if (orientationGuardToggle.checked && (!isFaceDirectionAvailable || isFaceDirectionBlocked)) {
     actionStatus.textContent = isFaceDirectionAvailable
       ? "顔の向きが基準から大きく変わっているため、譜めくりを停止しました。"
       : "顔の向きを計測できないため、譜めくりを停止しました。";
     return;
   }
-
   if (direction !== "左" && direction !== "右") {
     actionStatus.textContent = "左右を見てまばたきするとページを切り替えられます。";
     return;
   }
-
   if (totalPages === 0) {
     actionStatus.textContent = "先にPDFまたは画像・マンガを読み込んでください。";
     return;
@@ -660,11 +611,12 @@ function handleGazeBlink(direction) {
 
 function onResults(results) {
   const faces = results.multiFaceLandmarks;
-
   if (!faces || faces.length === 0) {
     status.textContent = "顔を検知できていません";
     gazeStatus.textContent = "視線：計測できません";
     closedFrames = 0;
+    eyeIsClosed = false;
+    closedCandidateAt = null;
     blinkClosedAt = null;
     blinkDirectionAtStart = "正面";
     lastGaze = "正面";
@@ -677,13 +629,15 @@ function onResults(results) {
     return;
   }
 
+  // maxNumFaces=1なので、現状はMediaPipeが選んだ1人分を使用
   const lm = faces[0];
-
-  // まばたき検出に必要なのは目の輪郭点。
-  // 虹彩点が取得できなくても、まばたき判定は続ける。
+  // EARに必要なのは目の輪郭点（468点）まで。虹彩点がなくても
+  // まばたき検出は続け、視線判定だけを利用不可にする。
   if (lm.length < 468) {
     status.textContent = "顔の特徴点が十分に取得できていません";
     closedFrames = 0;
+    eyeIsClosed = false;
+    closedCandidateAt = null;
     blinkClosedAt = null;
     blinkDirectionAtStart = "正面";
     isFaceDirectionAvailable = false;
@@ -691,26 +645,18 @@ function onResults(results) {
     updateFaceDirectionStatus();
     return;
   }
-
   status.textContent = "顔を検知しています";
 
   // 顔の向きガード
   const rawFaceDirection = calculateFaceDirectionIndex(lm);
   isFaceDirectionAvailable = rawFaceDirection !== null;
-
   if (rawFaceDirection !== null) {
     faceDirectionSamples.push(rawFaceDirection);
-
-    if (faceDirectionSamples.length > FACE_DIRECTION_SMOOTHING_FRAMES) {
-      faceDirectionSamples.shift();
-    }
-
+    if (faceDirectionSamples.length > FACE_DIRECTION_SMOOTHING_FRAMES) faceDirectionSamples.shift();
     currentFaceDirection = average(faceDirectionSamples);
-
     if (isCalibrated && centerFaceDirection !== null) {
       faceDirectionDifference = currentFaceDirection - centerFaceDirection;
-      isFaceDirectionBlocked =
-        Math.abs(faceDirectionDifference) > FACE_DIRECTION_THRESHOLD;
+      isFaceDirectionBlocked = Math.abs(faceDirectionDifference) > FACE_DIRECTION_THRESHOLD;
     } else {
       faceDirectionDifference = 0;
       isFaceDirectionBlocked = false;
@@ -718,118 +664,98 @@ function onResults(results) {
   } else {
     isFaceDirectionBlocked = false;
   }
-
   updateFaceDirectionStatus();
 
-  // =====================================================
   // まばたき検出
-  // =====================================================
   const leftEAR = calculateEAR(lm, 33, 160, 158, 133, 153, 144);
   const rightEAR = calculateEAR(lm, 362, 385, 387, 263, 373, 380);
   const ear = (leftEAR + rightEAR) / 2;
-
   currentEar = ear;
   currentEarThreshold = updateEarThreshold(ear);
-
   const now = performance.now();
 
-  if (ear < currentEarThreshold) {
-    if (closedFrames === 0) {
-      blinkDirectionAtStart = lastGaze;
-      blinkClosedAt = now;
-    }
-    closedFrames++;
-  } else {
-    const closedDuration = blinkClosedAt === null ? 0 : now - blinkClosedAt;
+  // 閉眼しきい値と開眼しきい値を分ける「ヒステリシス」を使用する。
+  // EARが境界付近で揺れても、1回のまばたきを何度も数えない。
+  const openThreshold = Math.max(
+    currentEarThreshold + 0.025,
+    Math.min(0.38, (openEyeEarBaseline || currentEarThreshold) * EAR_OPEN_THRESHOLD_RATIO)
+  );
 
-    // 2フレーム以上の閉眼を検知。長時間目を閉じていた場合は瞬きに数えない。
-    if (closedFrames >= 2 &&
-        closedDuration >= 35 &&
-        closedDuration <= 900) {
+  if (!eyeIsClosed) {
+    if (ear < currentEarThreshold) {
+      if (closedFrames === 0) {
+        closedCandidateAt = now;
+        blinkDirectionAtStart = lastGaze;
+      }
+      closedFrames++;
+      // 連続した2フレーム以上で閉眼状態に入る
+      if (closedFrames >= 2) {
+        eyeIsClosed = true;
+        blinkClosedAt = closedCandidateAt === null ? now : closedCandidateAt;
+      }
+    } else {
+      closedFrames = 0;
+      closedCandidateAt = null;
+    }
+  } else if (ear >= openThreshold) {
+    // 明確に開眼へ戻った時だけ、閉眼区間を1回のまばたきとして判定
+    const closedDuration = blinkClosedAt === null ? 0 : now - blinkClosedAt;
+    if (closedDuration >= 50 && closedDuration <= 900 &&
+        now - lastBlinkAt >= BLINK_MIN_INTERVAL) {
       blinkCount++;
       lastBlinkAt = now;
       handleGazeBlink(blinkDirectionAtStart);
     }
-
+    eyeIsClosed = false;
     closedFrames = 0;
+    closedCandidateAt = null;
     blinkClosedAt = null;
     blinkDirectionAtStart = lastGaze;
   }
 
-  blinkStatus.textContent =
-    "まばたき回数：" + blinkCount +
-    " ｜ EAR=" + ear.toFixed(3) +
-    " / 閉眼判定＜" + currentEarThreshold.toFixed(3) +
+  blinkStatus.textContent = "まばたき回数：" + blinkCount +
+    " ｜ EAR=" + ear.toFixed(3) + " / 閉眼判定＜" + currentEarThreshold.toFixed(3) +
     (now - lastBlinkAt < 800 ? "（まばたき検出！）" : "");
 
-  // =====================================================
-  // 虹彩から左右視線を計算
-  // =====================================================
+  // 虹彩から左右視線を計算。虹彩点がない場合もまばたき検出は続行。
   if (lm.length <= 473) {
-    gazeStatus.textContent =
-      "視線：虹彩の特徴点を取得できません（まばたき検出は継続）";
-    debug.textContent =
-      "EAR=" + ear.toFixed(3) +
-      " ｜ 閉眼判定＜" + currentEarThreshold.toFixed(3);
+    gazeStatus.textContent = "視線：虹彩の特徴点を取得できません（まばたき検出は継続）";
+    debug.textContent = "EAR=" + ear.toFixed(3) + " ｜ 閉眼判定＜" + currentEarThreshold.toFixed(3);
     return;
   }
-
   const ratio1 = eyeRatio(lm, 468, 33, 133);
   const ratio2 = eyeRatio(lm, 473, 362, 263);
   if (ratio1 === null || ratio2 === null) return;
-
   const rawRatio = (ratio1 + ratio2) / 2;
 
   // 視線と顔向きの基準を登録
   if (calibrating) {
     if (ear >= currentEarThreshold) {
       calibrationSamples.push(rawRatio);
-
-      if (rawFaceDirection !== null) {
-        faceDirectionCalibrationSamples.push(rawFaceDirection);
-      }
+      if (rawFaceDirection !== null) faceDirectionCalibrationSamples.push(rawFaceDirection);
     }
-
-    debug.textContent =
-      "正面の基準を登録中：" +
-      calibrationSamples.length + "/" + CALIBRATION_TARGET;
+    debug.textContent = "正面の基準を登録中：" + calibrationSamples.length + "/" + CALIBRATION_TARGET;
     gazeStatus.textContent = "正面を見てください";
 
     if (calibrationSamples.length >= CALIBRATION_TARGET) {
       centerRatio = average(calibrationSamples);
-
       centerFaceDirection = faceDirectionCalibrationSamples.length
-        ? average(faceDirectionCalibrationSamples)
-        : null;
-
+        ? average(faceDirectionCalibrationSamples) : null;
       isCalibrated = true;
       calibrating = false;
       gazeSamples = [];
-      faceDirectionSamples =
-        rawFaceDirection === null ? [] : [rawFaceDirection];
+      faceDirectionSamples = rawFaceDirection === null ? [] : [rawFaceDirection];
       lastGaze = "正面";
       faceDirectionDifference = 0;
       isFaceDirectionBlocked = false;
-
       calibrateButton.disabled = false;
       gazeStatus.textContent = "基準登録完了";
-
-      debug.textContent =
-        "視線基準=" + centerRatio.toFixed(3) +
-        " ｜ 顔向き基準=" +
-        (centerFaceDirection === null
-          ? "登録失敗"
-          : centerFaceDirection.toFixed(3)) +
-        " ｜ 開眼EAR基準=" +
-        (openEyeEarBaseline === null
-          ? "取得中"
-          : openEyeEarBaseline.toFixed(3));
-
+      debug.textContent = "視線基準=" + centerRatio.toFixed(3) +
+        " ｜ 顔向き基準=" + (centerFaceDirection === null ? "登録失敗" : centerFaceDirection.toFixed(3)) +
+        " ｜ 開眼EAR基準=" + (openEyeEarBaseline === null ? "取得中" : openEyeEarBaseline.toFixed(3));
       updateFaceDirectionStatus();
-      actionStatus.textContent =
-        "左右＋まばたきでPDF・画像のページを切り替えできます。";
+      actionStatus.textContent = "左右＋まばたきでPDF・画像のページを切り替えできます。";
     }
-
     return;
   }
 
@@ -837,7 +763,6 @@ function onResults(results) {
     gazeStatus.textContent = "視線：基準登録が必要です";
     return;
   }
-
   if (ear < currentEarThreshold) {
     gazeStatus.textContent = "視線：" + lastGaze + "（まばたき中）";
     return;
@@ -845,37 +770,27 @@ function onResults(results) {
 
   gazeSamples.push(rawRatio);
   if (gazeSamples.length > 7) gazeSamples.shift();
-
   const smoothRatio = average(gazeSamples);
   const difference = smoothRatio - centerRatio;
 
-  if (difference > GAZE_THRESHOLD) {
-    lastGaze = "左";
-  } else if (difference < -GAZE_THRESHOLD) {
-    lastGaze = "右";
-  } else {
-    lastGaze = "正面";
-  }
+  // 既存試作品の方向対応を維持
+  if (difference > GAZE_THRESHOLD) lastGaze = "左";
+  else if (difference < -GAZE_THRESHOLD) lastGaze = "右";
+  else lastGaze = "正面";
 
   gazeStatus.textContent = "視線：" + lastGaze;
-  debug.textContent =
-    "現在値=" + smoothRatio.toFixed(3) +
+  debug.textContent = "現在値=" + smoothRatio.toFixed(3) +
     " ｜ 正面基準=" + centerRatio.toFixed(3) +
     " ｜ 視線差分=" + difference.toFixed(3) +
     " ｜ 顔向き変化=" + faceDirectionDifference.toFixed(3) +
     " ｜ EAR=" + ear.toFixed(3) +
-    " ｜ 開眼EAR基準=" +
-    (openEyeEarBaseline === null
-      ? "取得中"
-      : openEyeEarBaseline.toFixed(3));
+    " ｜ 開眼EAR基準=" + (openEyeEarBaseline === null ? "取得中" : openEyeEarBaseline.toFixed(3));
 }
 
 async function detectFrame(faceMesh) {
   if (!running) return;
-
   if (video.readyState >= 2 && !processing) {
     processing = true;
-
     try {
       await faceMesh.send({ image: video });
     } catch (error) {
@@ -883,71 +798,50 @@ async function detectFrame(faceMesh) {
       status.textContent = "検知エラー：" + error.message;
       running = false;
       startButton.disabled = false;
-
       const stream = video.srcObject;
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      if (stream) stream.getTracks().forEach(track => track.stop());
     } finally {
       processing = false;
     }
   }
-
-  if (running) {
-    requestAnimationFrame(() => detectFrame(faceMesh));
-  }
+  if (running) requestAnimationFrame(() => detectFrame(faceMesh));
 }
 
 startButton.addEventListener("click", async () => {
   startButton.disabled = true;
   status.textContent = "準備中です……";
-
   try {
-    if (typeof FaceMesh === "undefined") {
-      throw new Error("MediaPipeを読み込めませんでした");
-    }
-
+    if (typeof FaceMesh === "undefined") throw new Error("MediaPipeを読み込めませんでした");
     const faceMesh = new FaceMesh({
-      locateFile: file =>
-        "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/" + file
+      locateFile: file => "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/" + file
     });
-
     faceMesh.setOptions({
       maxNumFaces: 1,
       refineLandmarks: true,
       minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5
     });
-
     faceMesh.onResults(onResults);
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: 640,
-        height: 480,
-        facingMode: "user"
-      },
+      video: { width: 640, height: 480, facingMode: "user" },
       audio: false
     });
-
     video.srcObject = stream;
     await video.play();
-
     running = true;
     calibrateButton.disabled = false;
     status.textContent = "カメラ起動中";
     detectFrame(faceMesh);
   } catch (error) {
     console.error(error);
-    status.textContent =
-      "エラー：" + error.name + " / " + error.message;
+    status.textContent = "エラー：" + error.name + " / " + error.message;
     startButton.disabled = false;
   }
 });
 
 calibrateButton.addEventListener("click", () => {
   if (!running) return;
-
   isCalibrated = false;
   calibrating = true;
   centerRatio = null;
@@ -963,19 +857,17 @@ calibrateButton.addEventListener("click", () => {
   lastGaze = "正面";
   blinkDirectionAtStart = "正面";
   closedFrames = 0;
+  eyeIsClosed = false;
+  closedCandidateAt = null;
   blinkClosedAt = null;
-
   calibrateButton.disabled = true;
   gazeStatus.textContent = "正面を見てください";
-  debug.textContent =
-    "目を開け、顔を正面に向けて画面中央を見てください。";
-
+  debug.textContent = "目を開け、顔を正面に向けて画面中央を見てください。";
   updateFaceDirectionStatus();
 });
 
 orientationGuardToggle.addEventListener("change", () => {
   updateFaceDirectionStatus();
-
   actionStatus.textContent = orientationGuardToggle.checked
     ? "顔の向きチェックON：基準から大きく変わると自動譜めくりを停止します。"
     : "顔の向きチェックOFF：向きによる停止は行いません。";
